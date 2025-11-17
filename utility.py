@@ -1,5 +1,6 @@
 import base64
 import asyncio
+import os
 import requests
 import cv2
 import time
@@ -21,7 +22,10 @@ def frames_to_base64(frames, fps, timestamps):
     width = frames[0].shape[1]
     height = frames[0].shape[0]
     fourcc = cv2.VideoWriter_fourcc(*'avc1')
-    video_writer = cv2.VideoWriter('./video_warning/output.mp4', fourcc, fps, (width, height))
+    warning_dir = './video_warning'
+    os.makedirs(warning_dir, exist_ok=True)
+    temp_video_path = os.path.join(warning_dir, 'output.mp4')
+    video_writer = cv2.VideoWriter(temp_video_path, fourcc, fps, (width, height))
 
     for frame in frames:
         if frame.dtype != np.uint8:
@@ -31,7 +35,7 @@ def frames_to_base64(frames, fps, timestamps):
         video_writer.write(frame)
     video_writer.release()
 
-    with open('./video_warning/output.mp4', 'rb') as video_file:
+    with open(temp_video_path, 'rb') as video_file:
         video_base64 = base64.b64encode(video_file.read()).decode('utf-8')
     return video_base64
 
@@ -157,7 +161,7 @@ def insert_txt(docs, table_name):
 def create_collection():
     try:
         client.create_collection(
-            collection_name=RAGConfig.COLLECTION_NAME,
+            collection_name=RAGConfig.QDRANT_COLLECTION_NAME,
             vectors_config=VectorParams(size=384, distance=Distance.COSINE)  # 使用 MiniLM-L6-v2 生成 384 维向量
         )
     except Exception as e:
@@ -183,7 +187,7 @@ def search_similar(query_description: str, top_k: int = 5):
     embedding = model.encode(query_description)
 
     results = client.search(
-        collection_name=RAGConfig.COLLECTION_NAME,
+        collection_name=RAGConfig.QDRANT_COLLECTION_NAME,
         query_vector=embedding.tolist(),
         limit=top_k
     )

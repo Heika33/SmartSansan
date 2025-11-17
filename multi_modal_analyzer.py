@@ -30,7 +30,10 @@ class MultiModalAnalyzer:
         """检查 Qdrant 集合是否存在"""
         try:
             collections = self.client.get_collections()
-            return collection_name in collections
+            return any(
+                getattr(collection, "name", None) == collection_name
+                for collection in getattr(collections, "collections", [])
+            )
         except Exception as e:
             print(f"检查集合是否存在失败: {e}")
             return False

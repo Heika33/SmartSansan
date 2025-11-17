@@ -119,26 +119,30 @@ class VideoProcessor:
 class VideoArchiver:
     def __init__(self):
         self.current_writer: Optional[cv2.VideoWriter] = None
-        self.last_split = datetime.now()
+        self.last_split: Optional[datetime] = None
+        os.makedirs(ARCHIVE_DIR, exist_ok=True)
 
     async def write_frame(self, frame: np.ndarray):
+        frame_size = (frame.shape[1], frame.shape[0])
         if self._should_split():
-            self._create_new_file()
+            self._create_new_file(frame_size)
         if self.current_writer:
             self.current_writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
     def _should_split(self):
+        if self.current_writer is None or self.last_split is None:
+            return True
         return (datetime.now() - self.last_split).total_seconds() >= VideoConfig.VIDEO_INTERVAL
 
-    def _create_new_file(self):
+    def _create_new_file(self, frame_size):
         if self.current_writer:
             self.current_writer.release()
-        filename = f"{ARCHIVE_DIR}/{datetime.now().strftime('%Y%m%d_%H%M')}.mp4"
+        filename = f"{ARCHIVE_DIR}/{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
         self.current_writer = cv2.VideoWriter(
             filename,
             cv2.VideoWriter_fourcc(*'avc1'),
             25,
-            (640, 360)
+            frame_size
         )
         self.last_split = datetime.now()
 class AlertService:
@@ -183,7 +187,16 @@ async def start_monitoring(data: MonitorRequest):
     if system_state["status"] == "running":
         return {"message": "系统已在运行中"}
 
-    video_source = data.video_path if data.source_type != "device" else int(data.video_path)
+    if data.source_type == "device":
+        if not data.video_path.strip():
+            video_source = 0
+        else:
+            try:
+                video_source = int(data.video_path)
+            except ValueError:
+                return {"error": "无效的摄像头编号"}, 400
+    else:
+        video_source = data.video_path
     try:
         processor = VideoProcessor(video_source)
     except Exception as e:
