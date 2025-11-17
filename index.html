@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <title>智能视频监控预警系统</title>
+  <style>
+    body { font-family: Arial; padding: 20px; }
+    label, select, input, button { margin: 5px; }
+    video, img { width: 640px; height: 360px; background: #000; margin-top: 10px; }
+    #alertBox { margin-top: 10px; padding: 10px; border: 1px solid red; background: #fee; }
+    #statusIcon { font-weight: bold; font-size: 16px; }
+    #historyList { margin-top: 10px; }
+  </style>
+</head>
+<body>
+
+<h2>🎥 智能视频监控预警系统</h2>
+
+<div class="controls">
+  <label for="sourceType">选择视频源：</label>
+  <select id="sourceType" onchange="updateSourceType()">
+    <option value="device">本机摄像头</option>
+    <option value="rtsp">外接摄像头 (RTSP)</option>
+    <option value="upload">上传本地视频</option>
+  </select>
+
+  <div id="cameraIndexRow" style="display:none;">
+    <label for="cameraIndex">本机摄像头编号：</label>
+    <select id="cameraIndex"></select>
+    <button onclick="detectCameras()">探测摄像头</button>
+  </div>
+
+  <div id="videoPathRow" style="display:none;">
+    <input type="text" id="videoPath" placeholder="请输入 RTSP 或 本地路径">
+  </div>
+
+  <div id="fileInputRow" style="display:none;">
+    <input type="file" id="videoFile" accept="video/*">
+  </div>
+
+  <button onclick="startMonitoring()">▶️ 开始监控</button>
+  <button onclick="pauseMonitoring()">⏸ 暂停</button>
+  <button onclick="stopMonitoring()">⏹ 停止</button>
+  <span>状态：<span id="statusIcon">⚪️ 未启动</span></span>
+</div>
+
+<h3>📺 实时画面</h3>
+<img id="videoFeed" alt="等待视频帧...">
+
+<h3>🚨 实时警报</h3>
+<div id="alertBox">暂无警报</div>
+
+<h3>📜 历史记录</h3>
+<div id="historyList">暂无记录</div>
+<button onclick="loadHistory(-1)">上一页</button>
+<button onclick="loadHistory(1)">下一页</button>
+
+<h3>🔍 相似查询</h3>
+<input type="text" id="searchQuery" placeholder="输入查询内容">
+<button onclick="searchSimilar()">查询历史视频描述</button>
+<div id="searchResults"></div>
+
+<h3>🗣 问答系统</h3>
+<input type="text" id="userQuestion" placeholder="请输入您的问题">
+<button onclick="askQuestion()">提问</button>
+
+<div id="answerBox">
+    <p id="answer"></p>
+</div>
+
+<script>
+let videoSocket, alertSocket;
+let page = 1;
+
+function updateSourceType() {
+  const type = document.getElementById("sourceType").value;
+  document.getElementById("cameraIndexRow").style.display = type === "device" ? "block" : "none";
+  document.getElementById("videoPathRow").style.display = type === "rtsp" ? "block" : "none";
+  document.getElementById("fileInputRow").style.display = type === "upload" ? "block" : "none";
+}
+
+function detectCameras() {
+  fetch('/list_cameras')
+    .then(res => res.json())
+    .then(data => {
+      const select = document.getElementById("cameraIndex");
+      select.innerHTML = "";
+      data.devices.forEach((label, index) => {
+        const option = document.createElement("option");
+        option.value = index;
+        option.text = label;
+        select.appendChild(option);
+      });
+    });
+}
+
+function askQuestion() {
+    const query = document.getElementById("userQuestion").value;
+    fetch(`/ask_question?query=${encodeURIComponent(query)}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.answer) {
+                document.getElementById("answer").innerText = data.answer;
+            } else {
+                document.getElementById("answer").innerText = "抱歉，无法回答这个问题。";
+            }
+        });
+}
+
+function startMonitoring() {
+  const type = document.getElementById("sourceType").value;
+
+  if (type === "upload") {
+    const file = document.getElementById("videoFile").files[0];
+    if (!file) return alert("请选择一个视频文件");
+    const formData = new FormData();
+    formData.append("file", file);
+    fetch('/upload_video', {
+      method: 'POST',
+      body: formData
+    }).then(res => res.json()).then(data => {
+      if (data.success) {
+        triggerStart("upload", data.path);
+      } else {
+        alert("视频上传失败");
+      }
+    });
+  } else if (type === "device") {
+    const cameraIndex = document.getElementById("cameraIndex").value;
+    triggerStart("device", cameraIndex);
+  } else if (type === "rtsp") {
+    const path = document.getElementById("videoPath").value;
+    triggerStart("rtsp", path);
+  }
+}
+
+function triggerStart(type, path) {
+  fetch('/start_monitoring', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_type: type, video_path: path })
+  }).then(res => res.json()).then(data => {
+    if (data.message) {
+      connectSockets();
+      updateStatus();
+    } else {
+      alert("启动失败：" + JSON.stringify(data));
+    }
+  });
+}
+
+function pauseMonitoring() {
+  fetch('/pause_monitoring', { method: 'POST' }).then(updateStatus);
+}
+
+function stopMonitoring() {
+  fetch('/stop_monitoring', { method: 'POST' }).then(updateStatus);
+  if (videoSocket) videoSocket.close();
+  if (alertSocket) alertSocket.close();
+}
+function connectSockets() {
+  const img = document.getElementById("videoFeed");
+
+  videoSocket = new WebSocket("ws://" + location.host + "/video_feed");
+  videoSocket.binaryType = "arraybuffer";
+  videoSocket.onmessage = event => {
+    const blob = new Blob([event.data], { type: "image/jpeg" });
+    img.src = URL.createObjectURL(blob);
+  };
+
+  alertSocket = new WebSocket("ws://" + location.host + "/alerts");
+  alertSocket.onmessage = event => {
+    const data = JSON.parse(event.data);
+    document.getElementById("alertBox").innerHTML = `
+      <strong>时间:</strong> ${data.timestamp}<br>
+      <strong style="color:red;">${data.alert}</strong><br>
+      <pre>${data.description}</pre>
+    `;
+  };
+}
+
+function updateStatus() {
+  fetch('/status').then(res => res.json()).then(data => {
+    const map = {
+      "idle": "⚪️ 未启动",
+      "running": "🟢 运行中",
+      "paused": "🟡 已暂停",
+      "stopped": "🔴 已停止"
+    };
+    document.getElementById("statusIcon").textContent = map[data.status] || "❓";
+  });
+}
+
+function loadHistory(delta) {
+  page = Math.max(1, page + delta);
+  fetch(`/get_history?page=${page}&size=5`)
+    .then(res => res.json())
+    .then(data => {
+      const list = document.getElementById("historyList");
+      list.innerHTML = data.items.map((item, i) =>
+        `<div><strong>#${(data.page - 1) * data.size + i + 1}</strong><br>${item}</div>`
+      ).join("<hr>");
+    });
+}
+
+function searchSimilar() {
+    const query = document.getElementById("searchQuery").value;
+    fetch(`/search_similar?query=${query}`)
+        .then(res => res.json())
+        .then(data => {
+            const resultsDiv = document.getElementById("searchResults");
+            resultsDiv.innerHTML = data.results.join("<br>");
+        });
+}
+
+// 初始化
+updateSourceType();
+updateStatus();
+loadHistory(0);
+</script>
+
+</body>
+</html>
