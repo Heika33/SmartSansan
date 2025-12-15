@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <title>智能视频监控预警系统</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+  <div class="page-container">
+    <header class="page-header">
+      <h1>🎥 智能视频监控预警系统</h1>
+      <div class="status-badge">
+        当前状态：
+        <span id="statusIcon" class="status-indicator idle">
+          <span class="dot"></span>
+          <span class="label">⚪️ 未启动</span>
+        </span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <div class="stack">
+        <section class="card controls-card">
+          <h2>🎛 视频源控制</h2>
+          <div class="controls-grid">
+            <div class="form-group">
+              <label for="sourceType">选择视频源</label>
+              <select id="sourceType" onchange="updateSourceType()">
+                <option value="device">本机摄像头</option>
+                <option value="rtsp">外接摄像头 (RTSP)</option>
+                <option value="upload">上传本地视频</option>
+              </select>
+            </div>
+
+            <div class="form-group" id="cameraIndexRow" style="display:none;">
+              <label for="cameraIndex">摄像头编号</label>
+              <div class="button-row">
+                <select id="cameraIndex" style="flex:1;"></select>
+                <button class="secondary" onclick="detectCameras()">探测</button>
+              </div>
+            </div>
+
+            <div class="form-group" id="videoPathRow" style="display:none;">
+              <label for="videoPath">RTSP / 本地路径</label>
+              <input type="text" id="videoPath" placeholder="请输入 RTSP 或 本地路径">
+            </div>
+
+            <div class="form-group" id="fileInputRow" style="display:none;">
+              <label for="videoFile">上传本地视频</label>
+              <input type="file" id="videoFile" accept="video/*">
+            </div>
+
+            <div class="button-row">
+              <button class="primary" onclick="startMonitoring()">▶️ 开始监控</button>
+              <button class="secondary" onclick="pauseMonitoring()">⏸ 暂停</button>
+              <button class="danger" onclick="stopMonitoring()">⏹ 停止</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card history-card">
+          <h2>📜 历史记录</h2>
+          <div id="historyList" class="history-list timeline">
+            <div class="empty-state">暂无记录</div>
+          </div>
+          <div class="history-pagination">
+            <button class="secondary" onclick="loadHistory(-1)">上一页</button>
+            <button class="secondary" onclick="loadHistory(1)">下一页</button>
+          </div>
+        </section>
+      </div>
+
+      <div class="stack">
+        <section class="card video-panel">
+          <h2>📺 实时画面</h2>
+          <img id="videoFeed" alt="等待视频帧...">
+
+          <h3>🚨 实时警报</h3>
+          <div id="alertBox" class="alert-box">暂无警报</div>
+        </section>
+
+        <section class="card qa-card">
+          <h2>🧠 智能问答</h2>
+          <p>直接输入自然语言问题，或使用下方快捷问题进行查询。</p>
+          <div class="qa-quick">
+            <button class="quick-question" onclick="setQuickQuestion('今天发生了什么？', true)">今天发生了什么</button>
+            <button class="quick-question" onclick="setQuickQuestion('本周是否有异常事件？', true)">本周异常</button>
+            <button class="quick-question" onclick="setQuickQuestion('介绍你的功能。', true)">介绍你的功能</button>
+          </div>
+          <div class="input-row">
+            <input type="text" id="userQuestion" placeholder="请输入您的问题，如：黑衣男子今天出现了几次？">
+            <button class="primary" onclick="askQuestion()">提问</button>
+          </div>
+          <div class="qa-meta">
+            <span class="mode-badge" id="qaModeBadge">监控模式</span>
+            <span class="qa-note" id="qaModeNote">基于历史监控记录</span>
+          </div>
+          <div class="qa-status" id="qaStatus">等待提问...</div>
+          <div class="answer-summary" id="answerSummary"></div>
+          <div class="stats-grid" id="answerStats"></div>
+          <div class="match-list" id="matchList"></div>
+          <div class="reference-list" id="referenceList"></div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+<script>
+let videoSocket, alertSocket;
+let page = 1;
+
+function updateSourceType() {
+  const type = document.getElementById("sourceType").value;
+  document.getElementById("cameraIndexRow").style.display = type === "device" ? "block" : "none";
+  document.getElementById("videoPathRow").style.display = type === "rtsp" ? "block" : "none";
+  document.getElementById("fileInputRow").style.display = type === "upload" ? "block" : "none";
+}
+
+function detectCameras() {
+  fetch('/list_cameras')
+    .then(res => res.json())
+    .then(data => {
+      const select = document.getElementById("cameraIndex");
+      select.innerHTML = "";
+      data.devices.forEach((label, index) => {
+        const option = document.createElement("option");
+        option.value = index;
+        option.text = label;
+        select.appendChild(option);
+      });
+    });
+}
+
+function startMonitoring() {
+  const type = document.getElementById("sourceType").value;
+
+  if (type === "upload") {
+    const file = document.getElementById("videoFile").files[0];
+    if (!file) return alert("请选择一个视频文件");
+    const formData = new FormData();
+    formData.append("file", file);
+    fetch('/upload_video', {
+      method: 'POST',
+      body: formData
+    }).then(res => res.json()).then(data => {
+      if (data.success) {
+        triggerStart("upload", data.path);
+      } else {
+        alert("视频上传失败");
+      }
+    });
+  } else if (type === "device") {
+    const cameraIndex = document.getElementById("cameraIndex").value;
+    triggerStart("device", cameraIndex);
+  } else if (type === "rtsp") {
+    const path = document.getElementById("videoPath").value;
+    triggerStart("rtsp", path);
+  }
+}
+
+function triggerStart(type, path) {
+  fetch('/start_monitoring', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_type: type, video_path: path })
+  }).then(res => res.json()).then(data => {
+    if (data.message) {
+      connectSockets();
+      updateStatus();
+    } else {
+      alert("启动失败：" + JSON.stringify(data));
+    }
+  });
+}
+
+function pauseMonitoring() {
+  fetch('/pause_monitoring', { method: 'POST' }).then(updateStatus);
+}
+
+function stopMonitoring() {
+  fetch('/stop_monitoring', { method: 'POST' }).then(updateStatus);
+  if (videoSocket) videoSocket.close();
+  if (alertSocket) alertSocket.close();
+}
+function connectSockets() {
+  const img = document.getElementById("videoFeed");
+
+  videoSocket = new WebSocket("ws://" + location.host + "/video_feed");
+  videoSocket.binaryType = "arraybuffer";
+  videoSocket.onmessage = event => {
+    const blob = new Blob([event.data], { type: "image/jpeg" });
+    img.src = URL.createObjectURL(blob);
+  };
+
+  alertSocket = new WebSocket("ws://" + location.host + "/alerts");
+  alertSocket.onmessage = event => {
+    const data = JSON.parse(event.data);
+    document.getElementById("alertBox").innerHTML = `
+      <strong>时间:</strong> ${data.timestamp}<br>
+      <strong style="color:red;">${data.alert}</strong><br>
+      <pre>${data.description}</pre>
+    `;
+  };
+}
+
+function updateStatus() {
+  fetch('/status').then(res => res.json()).then(data => {
+    const map = {
+      "idle": "⚪️ 未启动",
+      "running": "🟢 运行中",
+      "paused": "🟡 已暂停",
+      "stopped": "🔴 已停止"
+    };
+    const statusElem = document.getElementById("statusIcon");
+    statusElem.querySelector(".label").textContent = map[data.status] || "❓";
+    statusElem.classList.remove("running", "paused", "stopped", "idle");
+    statusElem.classList.add(data.status || "idle");
+  });
+}
+
+function loadHistory(delta) {
+  page = Math.max(1, page + delta);
+  fetch(`/get_history?page=${page}&size=5`)
+    .then(res => res.json())
+    .then(data => {
+      const list = document.getElementById("historyList");
+      if (!data.items.length) {
+        list.innerHTML = '<div class="empty-state">暂无记录</div>';
+        return;
+      }
+      list.innerHTML = data.items.map((item, i) => {
+        const idx = (data.page - 1) * data.size + i + 1;
+        return `
+          <div class="timeline-item">
+            <div class="content">
+              <div class="meta">#${idx}</div>
+              <div>${item}</div>
+            </div>
+          </div>
+        `;
+      }).join("");
+    });
+}
+
+function renderAnswer(data) {
+  const summary = document.getElementById("answerSummary");
+  const statsContainer = document.getElementById("answerStats");
+  const matchList = document.getElementById("matchList");
+  const mode = data.mode || "monitor";
+  const intent = data.intent || "describe";
+  const modeBadge = document.getElementById("qaModeBadge");
+  const modeNote = document.getElementById("qaModeNote");
+  const references = document.getElementById("referenceList");
+
+  summary.textContent = data.answer || "暂无明确回答。";
+  modeBadge.textContent = mode === "monitor" ? "监控模式" : "通用模式";
+  modeBadge.classList.toggle("general", mode !== "monitor");
+  modeNote.textContent = data.note || (mode === "monitor" ? "基于历史监控记录" : "不引用监控记录");
+
+  const stats = [];
+  if (
+    mode === "monitor" &&
+    intent === "count" &&
+    data.stats &&
+    typeof data.stats.count === "number"
+  ) {
+    stats.push(`<div class="stat-card"><span>出现次数</span><strong>${data.stats.count}</strong></div>`);
+    if (data.stats.first_seen) {
+      stats.push(`<div class="stat-card"><span>最早出现</span><strong>${data.stats.first_seen}</strong></div>`);
+    }
+    if (data.stats.last_seen) {
+      stats.push(`<div class="stat-card"><span>最近出现</span><strong>${data.stats.last_seen}</strong></div>`);
+    }
+  } else if (
+    mode === "monitor" &&
+    intent === "exists" &&
+    data.stats &&
+    typeof data.stats.exists === "string"
+  ) {
+    stats.push(`<div class="stat-card"><span>是否存在</span><strong>${data.stats.exists}</strong></div>`);
+  }
+  statsContainer.innerHTML = stats.join("");
+
+  if (mode === "monitor" && data.matches && data.matches.length) {
+    matchList.innerHTML = data.matches.map((match, idx) => `
+      <div class="match-item">
+        <div class="meta">#${idx + 1} ${match.timestamp || ""}</div>
+        <div>${match.description}</div>
+        ${match.reason ? `<div class="meta">判定依据：${match.reason}</div>` : ""}
+      </div>
+    `).join("");
+  } else if (mode === "monitor") {
+    const message = data.note || "未找到相关记录";
+    matchList.innerHTML = `<div class="empty-state">${message}</div>`;
+  } else {
+    matchList.innerHTML = data.note ? `<div class="empty-state">${data.note}</div>` : "";
+  }
+
+  if (data.sources && data.sources.length) {
+    references.innerHTML = data.sources.map((src, idx) => `
+      <div class="reference-card">
+        <strong>引用 ${idx + 1}</strong>
+        <p>${src}</p>
+      </div>
+    `).join("");
+  } else {
+    references.innerHTML = "";
+  }
+
+  if (mode === "general") {
+    statsContainer.innerHTML = "";
+    if (!data.note) {
+      data.note = "该问题属于通用问答，回答不引用监控记录。";
+    }
+    matchList.innerHTML = `<div class="empty-state">${data.note}</div>`;
+  }
+}
+
+function setQAStatus(message, type = "info") {
+  const qaStatus = document.getElementById("qaStatus");
+  qaStatus.textContent = message;
+  qaStatus.dataset.type = type;
+}
+
+function setQuickQuestion(text, auto = false) {
+  const input = document.getElementById("userQuestion");
+  input.value = text;
+  input.focus();
+  if (auto) {
+    askQuestion(true);
+  }
+}
+
+function askQuestion(autoTriggered = false) {
+  const input = document.getElementById("userQuestion");
+  const query = input.value.trim();
+  if (!query) {
+    setQAStatus("请输入问题后再次提问。", "warning");
+    return;
+  }
+  setQAStatus(autoTriggered ? "已使用快捷问题，正在检索..." : "正在分析，请稍候...", "loading");
+  fetch(`/ask_question?query=${encodeURIComponent(query)}`)
+    .then(response => response.json())
+    .then(data => {
+      if (data.error) {
+        setQAStatus(data.error, "error");
+        return;
+      }
+      setQAStatus("分析完成。", "success");
+      renderAnswer(data);
+    })
+    .catch(() => {
+      setQAStatus("问答服务暂时不可用，请稍后再试。", "error");
+    });
+}
+
+// 初始化
+updateSourceType();
+updateStatus();
+loadHistory(0);
+</script>
+
+</body>
+</html>

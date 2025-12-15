@@ -1,0 +1,39 @@
+# Python bytecode files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE specific files
+.vscode/
+.idea/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Python distribution / packaging
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
+
+# Test directories
+*.coverage
+*.tox/
+*.nox/
+*.coverage/
+*.hypothesis/
+.pytest_cache/
+
+# Local development files
+*.sqlite3
+# 忽略上传目录和告警视频目录
+uploads/
+video_warning/
